@@ -1,0 +1,111 @@
+name: Promote dependency capsule
+
+on:
+  workflow_call:
+    inputs:
+      artifact-run-id:
+        description: Workflow run containing the credential-blind promotion bundle
+        required: true
+        type: string
+      artifact-name:
+        description: Promotion input artifact name
+        required: true
+        type: string
+      destination:
+        description: Explicit non-latest ghcr.io image tag
+        required: true
+        type: string
+      source-revision:
+        description: Reviewed full Git commit SHA
+        required: true
+        type: string
+      promoter-sha256:
+        description: Reviewed SHA-256 of the fixed Linux capsule-promoter binary
+        required: true
+        type: string
+    outputs:
+      image:
+        description: Promoted immutable registry digest
+        value: ${{ jobs.promote.outputs.image }}
+
+permissions: {}
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    environment: capsule-promotion
+    permissions:
+      actions: read
+      attestations: write
+      id-token: write
+      packages: write
+    outputs:
+      image: ${{ steps.promote.outputs.image }}
+    steps:
+      - name: Validate fixed promotion inputs
+        env:
+          DESTINATION: ${{ inputs.destination }}
+          EXPECTED_REVISION: ${{ inputs.source-revision }}
+          EXPECTED_PROMOTER_SHA256: ${{ inputs.promoter-sha256 }}
+        run: |
+          case "$DESTINATION" in
+            ghcr.io/${{ github.repository_owner }}/*:latest) exit 1 ;;
+            ghcr.io/${{ github.repository_owner }}/*:*) ;;
+            *) exit 1 ;;
+          esac
+          test "${#EXPECTED_REVISION}" -eq 40
+          test "${#EXPECTED_PROMOTER_SHA256}" -eq 64
+          case "$EXPECTED_REVISION$EXPECTED_PROMOTER_SHA256" in *[!0-9a-f]*) exit 1 ;; esac
+      - name: Download credential-blind promotion bundle
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: promotion-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.artifact-run-id }}
+      - name: Verify fixed promoter binary
+        env:
+          EXPECTED_PROMOTER_SHA256: ${{ inputs.promoter-sha256 }}
+        run: |
+          printf '%s  %s\n' "$EXPECTED_PROMOTER_SHA256" promotion-input/capsule-promoter | sha256sum --check --strict
+          chmod 0500 promotion-input/capsule-promoter
+      - name: Authenticate fixed promoter to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Promote verified capsule without source checkout
+        id: promote
+        env:
+          DESTINATION: ${{ inputs.destination }}
+          REVIEWED_REVISION: ${{ inputs.source-revision }}
+        run: |
+          promotion-input/capsule-promoter \
+            --bundle promotion-input/promotion-bundle.json \
+            --destination "$DESTINATION" \
+            --source-revision "$REVIEWED_REVISION" \
+            --provenance-out promoted.provenance.json \
+            > promotion-result.json
+          image=$(jq -er '.image' promotion-result.json)
+          case "$image" in "$DESTINATION"@sha256:*) ;; *) exit 1 ;; esac
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+          printf 'subject-name=%s\n' "${image%@sha256:*}" >> "$GITHUB_OUTPUT"
+          printf 'subject-digest=sha256:%s\n' "${image##*@sha256:}" >> "$GITHUB_OUTPUT"
+      - name: Attest promoted registry digest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ${{ steps.promote.outputs.subject-name }}
+          subject-digest: ${{ steps.promote.outputs.subject-digest }}
+          push-to-registry: true
+      - name: Preserve promotion evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: capsule-promotion-evidence-${{ inputs.artifact-run-id }}
+          path: |
+            promotion-result.json
+            promoted.provenance.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove registry credentials
+        if: ${{ always() }}
+        run: docker logout ghcr.io || true
