@@ -1,0 +1,34 @@
+name: Feature proposal
+description: Propose a bounded capability or platform change
+title: "proposal: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator journey is currently impossible or unsafe?
+    validations:
+      required: true
+  - type: textarea
+    id: invariant
+    attributes:
+      label: Security invariants
+      description: Which existing boundaries must remain unchanged, and which boundary is intentionally affected?
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest observable contract that solves the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: proof
+    attributes:
+      label: Verification
+      description: What fail-closed exercise would prove the implementation?
+    validations:
+      required: true

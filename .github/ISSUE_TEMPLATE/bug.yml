@@ -1,0 +1,47 @@
+name: Bug report
+description: Report reproducible behavior that is not security-sensitive
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report vulnerabilities here. Use the private vulnerability reporting flow described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Tagged version or full commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS with Colima
+        - Ephemeral GitHub Actions Linux runner
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Include sanitized command output and exit status.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use synthetic data; never include credentials or private source.
+    validations:
+      required: true

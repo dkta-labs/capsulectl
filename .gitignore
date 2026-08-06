@@ -1,0 +1,16 @@
+# Local binaries
+/capsulectl
+/capsule-promoter
+/dist/
+
+# Local capsule state and generated evidence
+**/.capsule/state.json
+**/.capsule/intake.cdx.json
+**/promotion-output/
+**/resolution/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
