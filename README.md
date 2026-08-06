@@ -154,7 +154,7 @@ capsule-promoter \
 
 The promoter loads, verifies, tags, and pushes the bundled image. It does not clone source, build a Dockerfile, run a package manager, or execute repository code.
 
-For GitHub Actions, [`.github/workflows/promote-capsule.yml`](.github/workflows/promote-capsule.yml) is a reusable, source-free promotion job. Call it by an immutable commit SHA and supply the reviewed promoter binary checksum, promotion bundle artifact, destination tag, and source revision.
+For GitHub Actions, [`.github/workflows/promote-capsule.yml`](.github/workflows/promote-capsule.yml) is a reusable, source-free promotion job. Call it by an immutable commit SHA and supply the reviewed promoter binary checksum, promotion bundle artifact, destination tag, and source revision. The workflow preserves the promotion result and generated provenance before requesting GitHub's registry attestation. Callers whose private-repository plan does not support GitHub attestations may set `attest-registry-digest: false`; generated promotion provenance remains mandatory.
 
 ## Security model
 
