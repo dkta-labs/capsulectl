@@ -154,6 +154,8 @@ capsule-promoter \
 
 The promoter loads, verifies, tags, and pushes the bundled image. It does not clone source, build a Dockerfile, run a package manager, or execute repository code.
 
+For GitHub Actions, [`.github/workflows/promote-capsule.yml`](.github/workflows/promote-capsule.yml) is a reusable, source-free promotion job. Call it by an immutable commit SHA and supply the reviewed promoter binary checksum, promotion bundle artifact, destination tag, and source revision.
+
 ## Security model
 
 `capsulectl` is designed to contain package-controlled code, not declare it trustworthy.
