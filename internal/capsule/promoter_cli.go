@@ -42,7 +42,7 @@ func PromoterMain(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "capsule-promoter: %v\n", err)
 		return 1
 	}
-	result, err := Promote(ctx, engine, *bundle, *destination, *sourceRevision, *provenanceOutput, time.Now(), stdout, stderr)
+	result, err := Promote(ctx, engine, *bundle, *destination, *sourceRevision, *provenanceOutput, time.Now(), stderr, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "capsule-promoter: %v\n", err)
 		var commandError CommandError

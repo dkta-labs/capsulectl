@@ -36,6 +36,7 @@ jobs:
     environment: capsule-promotion
     permissions:
       actions: read
+      artifact-metadata: write
       attestations: write
       id-token: write
       packages: write
@@ -87,7 +88,7 @@ jobs:
             --provenance-out promoted.provenance.json \
             > promotion-result.json
           image=$(jq -er '.image' promotion-result.json)
-          case "$image" in "$DESTINATION"@sha256:*) ;; *) exit 1 ;; esac
+          case "$image" in "${DESTINATION%:*}"@sha256:*) ;; *) exit 1 ;; esac
           printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
           printf 'subject-name=%s\n' "${image%@sha256:*}" >> "$GITHUB_OUTPUT"
           printf 'subject-digest=sha256:%s\n' "${image##*@sha256:}" >> "$GITHUB_OUTPUT"
