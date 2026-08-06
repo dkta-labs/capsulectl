@@ -30,6 +30,8 @@ go install github.com/dkta-labs/capsulectl/cmd/capsulectl@latest
 go install github.com/dkta-labs/capsulectl/cmd/capsule-promoter@latest
 ```
 
+Commands installed from a module version report that version. An unversioned local checkout reports `dev`; release archives keep the version injected by the release workflow.
+
 For production use, prefer release archives and verify them against the published `SHA256SUMS` file.
 
 ## Quick start
