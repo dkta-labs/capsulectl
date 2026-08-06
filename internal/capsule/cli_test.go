@@ -68,3 +68,23 @@ func TestPromoterHelpAndVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectVersionPrefersReleaseThenModuleMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		injected string
+		module   string
+		want     string
+	}{
+		{name: "release linker value", injected: "1.2.3", module: "v0.0.0-pseudo", want: "1.2.3"},
+		{name: "go install module", injected: "dev", module: "v0.0.0-20260806025610-51bc66813805", want: "v0.0.0-20260806025610-51bc66813805"},
+		{name: "local checkout", injected: "dev", module: "(devel)", want: "dev"},
+		{name: "missing build info", injected: "dev", module: "", want: "dev"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := selectVersion(test.injected, test.module); got != test.want {
+				t.Fatalf("selectVersion(%q, %q) = %q, want %q", test.injected, test.module, got, test.want)
+			}
+		})
+	}
+}

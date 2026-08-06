@@ -20,7 +20,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 		printCapsulectlUsage(stdout)
 		return 0
 	case "version", "-version", "--version":
-		fmt.Fprintf(stdout, "capsulectl %s\n", Version)
+		fmt.Fprintf(stdout, "capsulectl %s\n", currentVersion())
 		return 0
 	}
 	command := args[0]

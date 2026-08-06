@@ -3,10 +3,29 @@ package capsule
 import (
 	"fmt"
 	"io"
+	"runtime/debug"
 )
 
 // Version is set at build time for release binaries.
 var Version = "dev"
+
+func currentVersion() string {
+	build, ok := debug.ReadBuildInfo()
+	if !ok {
+		return selectVersion(Version, "")
+	}
+	return selectVersion(Version, build.Main.Version)
+}
+
+func selectVersion(injected, module string) string {
+	if injected != "dev" {
+		return injected
+	}
+	if module == "" || module == "(devel)" {
+		return injected
+	}
+	return module
+}
 
 func printCapsulectlUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage: capsulectl <command> [options]")
