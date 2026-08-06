@@ -36,6 +36,7 @@ jobs:
     environment: capsule-promotion
     permissions:
       actions: read
+      artifact-metadata: write
       attestations: write
       id-token: write
       packages: write
