@@ -1,0 +1,61 @@
+name: Publish npm resolver
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      promoter-sha256: ${{ steps.evidence.outputs.promoter-sha256 }}
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build fixed capsule tools
+        run: |
+          mkdir -p out
+          go build -trimpath -o out/capsulectl ./cmd/capsulectl
+          go build -trimpath -o out/capsule-promoter ./cmd/capsule-promoter
+      - name: Build and exercise credential-blind resolver capsule
+        working-directory: images/npm-resolver
+        run: |
+          ../../out/capsulectl intake --spec .capsule/capsule.json
+          ../../out/capsulectl check --spec .capsule/capsule.json
+          test "$(../../out/capsulectl run --spec .capsule/capsule.json)" = "12.0.2"
+          ../../out/capsulectl bundle \
+            --spec .capsule/capsule.json \
+            --source-revision "${{ github.sha }}" \
+            --output promotion-output
+      - name: Bind fixed promoter to promotion bundle
+        id: evidence
+        run: |
+          cp out/capsule-promoter images/npm-resolver/promotion-output/capsule-promoter
+          promoter_sha256=$(sha256sum out/capsule-promoter | cut -d ' ' -f 1)
+          printf 'promoter-sha256=%s\n' "$promoter_sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload credential-blind promotion bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-resolver-promotion-${{ github.run_id }}
+          path: images/npm-resolver/promotion-output/
+          if-no-files-found: error
+          retention-days: 1
+
+  promote:
+    needs: build
+    permissions:
+      actions: read
+      attestations: write
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/promote-capsule.yml
+    with:
+      artifact-run-id: ${{ github.run_id }}
+      artifact-name: npm-resolver-promotion-${{ github.run_id }}
+      destination: ghcr.io/dkta-labs/npm-resolver:12.0.2
+      source-revision: ${{ github.sha }}
+      promoter-sha256: ${{ needs.build.outputs.promoter-sha256 }}
