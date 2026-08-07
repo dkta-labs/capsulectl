@@ -18,7 +18,7 @@ import (
 
 const (
 	SchemaVersion       = 1
-	intakePolicyVersion = 2
+	intakePolicyVersion = 3
 )
 
 var (
@@ -28,6 +28,7 @@ var (
 	environmentName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	secretName      = regexp.MustCompile(`(?i)(AUTH|COOKIE|CREDENTIAL|DATABASE_URL|KEY|PASS|SECRET|SESSION|TOKEN)`)
 	npmVersion      = regexp.MustCompile(`^(?:1[2-9]|[2-9][0-9])\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
+	bunVersion      = regexp.MustCompile(`^[1-9][0-9]*\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
 )
 
 type Spec struct {
@@ -58,7 +59,8 @@ type IntakeSpec struct {
 
 type ResolverSpec struct {
 	Image      string `json:"image"`
-	NPMVersion string `json:"npmVersion"`
+	NPMVersion string `json:"npmVersion,omitempty"`
+	BunVersion string `json:"bunVersion,omitempty"`
 }
 
 type Package struct {
@@ -247,8 +249,9 @@ func (loaded LoadedSpec) Validate(requireImage bool) error {
 		if !digestReference.MatchString(spec.Resolver.Image) {
 			return errors.New("resolver image must be an immutable registry sha256 digest")
 		}
-		if !npmVersion.MatchString(spec.Resolver.NPMVersion) {
-			return errors.New("resolver npmVersion must be an exact npm 12 or newer version")
+		manager, _, err := spec.Resolver.packageManager()
+		if err != nil {
+			return err
 		}
 		lockDirectory := filepath.Dir(spec.Intake.Lockfile)
 		manifest := filepath.Join(lockDirectory, "package.json")
@@ -259,11 +262,38 @@ func (loaded LoadedSpec) Validate(requireImage bool) error {
 		for _, input := range spec.Intake.Inputs {
 			manifestInput = manifestInput || input == manifest
 		}
-		if filepath.Base(spec.Intake.Lockfile) != "package-lock.json" || !manifestInput {
-			return errors.New("resolver requires package.json and package-lock.json in the same intake directory")
+		expectedLockfile := managerLockfile(manager)
+		if filepath.Base(spec.Intake.Lockfile) != expectedLockfile || !manifestInput {
+			return fmt.Errorf("%s resolver requires package.json and %s in the same intake directory", manager, expectedLockfile)
 		}
 	}
 	return nil
+}
+
+func (spec ResolverSpec) packageManager() (string, string, error) {
+	switch {
+	case spec.NPMVersion != "" && spec.BunVersion != "":
+		return "", "", errors.New("resolver must configure exactly one package manager version")
+	case spec.NPMVersion != "":
+		if !npmVersion.MatchString(spec.NPMVersion) {
+			return "", "", errors.New("resolver npmVersion must be an exact npm 12 or newer version")
+		}
+		return "npm", spec.NPMVersion, nil
+	case spec.BunVersion != "":
+		if !bunVersion.MatchString(spec.BunVersion) {
+			return "", "", errors.New("resolver bunVersion must be an exact Bun version")
+		}
+		return "bun", spec.BunVersion, nil
+	default:
+		return "", "", errors.New("resolver requires npmVersion or bunVersion")
+	}
+}
+
+func managerLockfile(manager string) string {
+	if manager == "bun" {
+		return "bun.lock"
+	}
+	return "package-lock.json"
 }
 
 func validateRelativePath(path string) error {
@@ -356,13 +386,21 @@ func (loaded LoadedSpec) InputDigest() (string, error) {
 	hash.Write([]byte(strconv.Itoa(loaded.Spec.MinimumReleaseAgeDays)))
 	hash.Write([]byte{0})
 	if loaded.Spec.Resolver != nil {
+		manager, version, err := loaded.Spec.Resolver.packageManager()
+		if err != nil {
+			return "", err
+		}
 		hash.Write([]byte("$resolver-image"))
 		hash.Write([]byte{0})
 		hash.Write([]byte(loaded.Spec.Resolver.Image))
 		hash.Write([]byte{0})
-		hash.Write([]byte("$resolver-npm-version"))
+		hash.Write([]byte("$resolver-package-manager"))
 		hash.Write([]byte{0})
-		hash.Write([]byte(loaded.Spec.Resolver.NPMVersion))
+		hash.Write([]byte(manager))
+		hash.Write([]byte{0})
+		hash.Write([]byte("$resolver-package-manager-version"))
+		hash.Write([]byte{0})
+		hash.Write([]byte(version))
 		hash.Write([]byte{0})
 	}
 	dockerfile, err := secureRegularFile(loaded.Directory, loaded.Spec.Intake.Dockerfile)

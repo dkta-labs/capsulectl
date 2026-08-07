@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"time"
 )
 
@@ -24,7 +25,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 		return 0
 	}
 	command := args[0]
-	if command != "plan" && command != "resolve" && command != "intake" && command != "check" && command != "bundle" && command != "run" {
+	if command != "init" && command != "plan" && command != "resolve" && command != "intake" && command != "check" && command != "bundle" && command != "run" {
 		fmt.Fprintf(stderr, "capsulectl: unknown command %s\n", command)
 		printCapsulectlUsage(stderr)
 		return 2
@@ -32,8 +33,14 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	specFilename := flags.String("spec", "", "capsule specification")
-	var sourceRevision, outputDirectory, packageValue *string
+	var sourceRevision, outputDirectory, packageValue, manager, sourceURI, bunVersion, resolverImage *string
 	var devDependency, removePackage *bool
+	if command == "init" {
+		manager = flags.String("manager", "", "package manager to configure (bun)")
+		sourceURI = flags.String("source-uri", "", "HTTPS repository URL")
+		bunVersion = flags.String("bun-version", defaultBunVersion, "exact Bun version")
+		resolverImage = flags.String("resolver-image", "", "immutable Bun resolver image digest")
+	}
 	if command == "resolve" {
 		packageValue = flags.String("package", "", "exact package@version to add or package name to remove")
 		outputDirectory = flags.String("output", "", "new candidate manifest and lockfile directory")
@@ -46,6 +53,29 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
+	}
+	if command == "init" {
+		if len(flags.Args()) != 0 || *manager != "bun" || *sourceURI == "" {
+			fmt.Fprintln(stderr, "capsulectl: init requires --manager bun and --source-uri and does not accept arguments")
+			return 2
+		}
+		root, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "capsulectl: %v\n", err)
+			return 1
+		}
+		result, err := InitializeBun(InitRequest{Root: root, SourceURI: *sourceURI, BunVersion: *bunVersion, Image: *resolverImage})
+		if err != nil {
+			fmt.Fprintf(stderr, "capsulectl: %v\n", err)
+			return 1
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(result); err != nil {
+			fmt.Fprintf(stderr, "capsulectl: write result: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	if *specFilename == "" {
 		fmt.Fprintln(stderr, "capsulectl: --spec is required")
