@@ -17,7 +17,7 @@ func PromoterMain(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			printPromoterUsage(stdout)
 			return 0
 		case "-version", "--version":
-			fmt.Fprintf(stdout, "capsule-promoter %s\n", Version)
+			fmt.Fprintf(stdout, "capsule-promoter %s\n", currentVersion())
 			return 0
 		}
 	}
