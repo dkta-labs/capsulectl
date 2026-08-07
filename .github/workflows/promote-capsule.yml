@@ -23,6 +23,11 @@ on:
         description: Reviewed SHA-256 of the fixed Linux capsule-promoter binary
         required: true
         type: string
+      attest-registry-digest:
+        description: Require a GitHub build-provenance attestation for the promoted digest
+        required: false
+        type: boolean
+        default: true
     outputs:
       image:
         description: Promoted immutable registry digest
@@ -92,12 +97,6 @@ jobs:
           printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
           printf 'subject-name=%s\n' "${image%@sha256:*}" >> "$GITHUB_OUTPUT"
           printf 'subject-digest=sha256:%s\n' "${image##*@sha256:}" >> "$GITHUB_OUTPUT"
-      - name: Attest promoted registry digest
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
-        with:
-          subject-name: ${{ steps.promote.outputs.subject-name }}
-          subject-digest: ${{ steps.promote.outputs.subject-digest }}
-          push-to-registry: true
       - name: Preserve promotion evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -107,6 +106,13 @@ jobs:
             promoted.provenance.json
           if-no-files-found: error
           retention-days: 90
+      - name: Attest promoted registry digest
+        if: inputs.attest-registry-digest
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ steps.promote.outputs.subject-name }}
+          subject-digest: ${{ steps.promote.outputs.subject-digest }}
+          push-to-registry: true
       - name: Remove registry credentials
         if: ${{ always() }}
         run: docker logout ghcr.io || true
