@@ -17,7 +17,7 @@ import (
 )
 
 var npmPackageName = regexp.MustCompile(`^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$`)
-var exactPackageVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
+var exactPackageVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 
 var dependencySections = []string{"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"}
 
@@ -47,6 +47,10 @@ func Resolve(ctx context.Context, engine Engine, loaded LoadedSpec, request Reso
 	if loaded.Spec.Resolver == nil || loaded.Spec.Intake == nil {
 		return ResolveResult{}, errors.New("resolver is not configured")
 	}
+	manager, managerVersion, err := loaded.Spec.Resolver.packageManager()
+	if err != nil {
+		return ResolveResult{}, err
+	}
 	target, err := parseResolveTarget(request.Package, request.Remove)
 	if err != nil {
 		return ResolveResult{}, err
@@ -62,20 +66,27 @@ func Resolve(ctx context.Context, engine Engine, loaded LoadedSpec, request Reso
 	if err != nil {
 		return ResolveResult{}, fmt.Errorf("read package manifest: %w", err)
 	}
-	lockfileSource, err := secureRegularFile(loaded.SourceRoot, loaded.Spec.Intake.Lockfile)
-	if err != nil {
-		return ResolveResult{}, fmt.Errorf("read package lockfile: %w", err)
+	lockfileSource, lockfileErr := secureRegularFile(loaded.SourceRoot, loaded.Spec.Intake.Lockfile)
+	lockfileExists := lockfileErr == nil
+	if lockfileErr != nil && !(manager == "bun" && errors.Is(lockfileErr, os.ErrNotExist)) {
+		return ResolveResult{}, fmt.Errorf("read package lockfile: %w", lockfileErr)
 	}
 	manifestBefore, err := os.ReadFile(manifestSource)
 	if err != nil {
 		return ResolveResult{}, err
 	}
+	if err := validatePackageManagerManifest(manifestBefore, manager, managerVersion); err != nil {
+		return ResolveResult{}, err
+	}
 	if err := validateManifestPrecondition(manifestBefore, target, request.Dev, request.Remove); err != nil {
 		return ResolveResult{}, err
 	}
-	packagesBefore, err := ParsePackageLock(lockfileSource)
-	if err != nil {
-		return ResolveResult{}, err
+	var packagesBefore []Package
+	if lockfileExists {
+		packagesBefore, err = ParseDependencyLock(lockfileSource)
+		if err != nil {
+			return ResolveResult{}, err
+		}
 	}
 	feedCandidates := append([]Package(nil), packagesBefore...)
 	if !request.Remove {
@@ -97,37 +108,44 @@ func Resolve(ctx context.Context, engine Engine, loaded LoadedSpec, request Reso
 		return ResolveResult{}, err
 	}
 	manifestName := "package.json"
-	lockfileName := "package-lock.json"
+	lockfileName := managerLockfile(manager)
 	if err := writeResolverInput(filepath.Join(stage, manifestName), manifestBefore); err != nil {
 		return ResolveResult{}, err
 	}
-	lockfileBefore, err := os.ReadFile(lockfileSource)
-	if err != nil {
-		return ResolveResult{}, err
+	if lockfileExists {
+		lockfileBefore, readErr := os.ReadFile(lockfileSource)
+		if readErr != nil {
+			return ResolveResult{}, readErr
+		}
+		if err := writeResolverInput(filepath.Join(stage, lockfileName), lockfileBefore); err != nil {
+			return ResolveResult{}, err
+		}
 	}
-	if err := writeResolverInput(filepath.Join(stage, lockfileName), lockfileBefore); err != nil {
-		return ResolveResult{}, err
-	}
-	versionPlan, err := resolverDockerArgs(loaded, stage, "none", []string{"npm", "--version"})
+	versionPlan, err := resolverDockerArgs(loaded, stage, "none", []string{manager, "--version"})
 	if err != nil {
 		return ResolveResult{}, err
 	}
 	var versionOutput bytes.Buffer
 	if err := engine.command(ctx, nil, &versionOutput, stderr, versionPlan...); err != nil {
-		return ResolveResult{}, fmt.Errorf("verify resolver npm version: %w", err)
+		return ResolveResult{}, fmt.Errorf("verify resolver %s version: %w", manager, err)
 	}
-	if actual := strings.TrimSpace(versionOutput.String()); actual != loaded.Spec.Resolver.NPMVersion {
-		return ResolveResult{}, fmt.Errorf("resolver npm version mismatch: expected %s, got %s", loaded.Spec.Resolver.NPMVersion, actual)
+	if actual := strings.TrimSpace(versionOutput.String()); actual != managerVersion {
+		return ResolveResult{}, fmt.Errorf("resolver %s version mismatch: expected %s, got %s", manager, managerVersion, actual)
 	}
-	command := resolverNPMCommand(loaded, target, request.Dev, request.Remove)
+	command := resolverCommand(loaded, manager, target, request.Dev, request.Remove)
 	resolvePlan, err := resolverDockerArgs(loaded, stage, "bridge", command)
 	if err != nil {
 		return ResolveResult{}, err
 	}
 	if err := engine.command(ctx, nil, stdout, stderr, resolvePlan...); err != nil {
-		return ResolveResult{}, fmt.Errorf("resolve npm package: %w", err)
+		return ResolveResult{}, fmt.Errorf("resolve %s package: %w", manager, err)
 	}
-	if err := validateResolverStage(stage); err != nil {
+	if manager == "bun" {
+		if err := ensureBunTextLock(stage, lockfileName); err != nil {
+			return ResolveResult{}, err
+		}
+	}
+	if err := validateResolverStage(stage, lockfileName); err != nil {
 		return ResolveResult{}, err
 	}
 	manifestCandidate := filepath.Join(stage, manifestName)
@@ -139,7 +157,7 @@ func Resolve(ctx context.Context, engine Engine, loaded LoadedSpec, request Reso
 	if err := validateManifestMutation(manifestBefore, manifestAfter, target, request.Dev, request.Remove); err != nil {
 		return ResolveResult{}, err
 	}
-	packagesAfter, err := ParsePackageLock(lockfileCandidate)
+	packagesAfter, err := ParseDependencyLock(lockfileCandidate)
 	if err != nil {
 		return ResolveResult{}, err
 	}
@@ -280,7 +298,71 @@ func resolverNPMCommand(loaded LoadedSpec, target resolvedTarget, dev, remove bo
 	return command
 }
 
-func validateResolverStage(stage string) error {
+func resolverCommand(loaded LoadedSpec, manager string, target resolvedTarget, dev, remove bool) []string {
+	if manager == "bun" {
+		action := "add"
+		packageValue := target.Name + "@" + target.Version
+		if remove {
+			action = "remove"
+			packageValue = target.Name
+		}
+		command := []string{
+			"bun", action, packageValue,
+			"--lockfile-only",
+			"--ignore-scripts",
+			"--exact",
+			"--minimum-release-age=" + strconv.Itoa(loaded.Spec.MinimumReleaseAgeDays*24*60*60),
+			"--registry=https://registry.npmjs.org/",
+			"--cache-dir=/tmp/bun-cache",
+			"--no-progress",
+			"--no-summary",
+		}
+		if dev && !remove {
+			command = append(command, "--dev")
+		}
+		return command
+	}
+	return resolverNPMCommand(loaded, target, dev, remove)
+}
+
+func ensureBunTextLock(stage, lockfileName string) error {
+	lockfile := filepath.Join(stage, lockfileName)
+	if _, err := os.Lstat(lockfile); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	manifestContents, err := os.ReadFile(filepath.Join(stage, "package.json"))
+	if err != nil {
+		return err
+	}
+	manifest, err := decodeJSONObject(manifestContents)
+	if err != nil {
+		return err
+	}
+	for _, section := range dependencySections {
+		if dependencies, ok := manifest[section].(map[string]any); ok && len(dependencies) > 0 {
+			return errors.New("Bun resolver did not produce bun.lock for a non-empty dependency graph")
+		}
+	}
+	workspace := map[string]any{}
+	if name, ok := manifest["name"].(string); ok && name != "" {
+		workspace["name"] = name
+	}
+	lock := map[string]any{
+		"lockfileVersion": 1,
+		"configVersion":   1,
+		"workspaces":      map[string]any{"": workspace},
+		"packages":        map[string]any{},
+	}
+	contents, err := json.MarshalIndent(lock, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeResolverInput(lockfile, append(contents, '\n'))
+}
+
+func validateResolverStage(stage, lockfileName string) error {
 	entries, err := os.ReadDir(stage)
 	if err != nil {
 		return err
@@ -289,7 +371,7 @@ func validateResolverStage(stage string) error {
 		return errors.New("resolver produced unexpected output files")
 	}
 	for _, entry := range entries {
-		if entry.Name() != "package.json" && entry.Name() != "package-lock.json" {
+		if entry.Name() != "package.json" && entry.Name() != lockfileName {
 			return fmt.Errorf("resolver produced unexpected output: %s", entry.Name())
 		}
 		info, err := entry.Info()
@@ -370,6 +452,27 @@ func decodeJSONObject(contents []byte) (map[string]any, error) {
 		return nil, errors.New("package.json must contain an object")
 	}
 	return value, nil
+}
+
+func validatePackageManagerManifest(contents []byte, manager, version string) error {
+	manifest, err := decodeJSONObject(contents)
+	if err != nil {
+		return err
+	}
+	actual, _ := manifest["packageManager"].(string)
+	expected := manager + "@" + version
+	if actual != expected {
+		return fmt.Errorf("package.json packageManager must be exactly %q", expected)
+	}
+	if manager == "bun" {
+		if _, present := manifest["trustedDependencies"]; !present {
+			return errors.New("Bun package.json must declare trustedDependencies explicitly")
+		}
+		if _, ok := manifest["trustedDependencies"].([]any); !ok {
+			return errors.New("Bun package.json trustedDependencies must be an array")
+		}
+	}
+	return nil
 }
 
 func manifestDependencyLocations(manifest map[string]any, name string) []string {

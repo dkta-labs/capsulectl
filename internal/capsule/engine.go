@@ -239,7 +239,11 @@ func Intake(ctx context.Context, engine Engine, loaded LoadedSpec, fetcher FeedF
 	if loaded.Spec.Intake == nil {
 		return IntakeResult{}, errors.New("intake is not configured")
 	}
-	if err := validateDockerfile(filepath.Join(loaded.Directory, loaded.Spec.Intake.Dockerfile)); err != nil {
+	manager, _, err := intakePackageManager(loaded)
+	if err != nil {
+		return IntakeResult{}, err
+	}
+	if err := validateDockerfile(filepath.Join(loaded.Directory, loaded.Spec.Intake.Dockerfile), manager); err != nil {
 		return IntakeResult{}, err
 	}
 	inputDigest, err := loaded.InputDigest()
@@ -250,7 +254,7 @@ func Intake(ctx context.Context, engine Engine, loaded LoadedSpec, fetcher FeedF
 	if err != nil {
 		return IntakeResult{}, err
 	}
-	packages, err := ParsePackageLock(lockfile)
+	packages, err := ParseDependencyLock(lockfile)
 	if err != nil {
 		return IntakeResult{}, err
 	}
@@ -294,14 +298,13 @@ func Intake(ctx context.Context, engine Engine, loaded LoadedSpec, fetcher FeedF
 	tag := "capsulectl:" + inputDigest[:16]
 	buildArgs := []string{
 		"build", "--pull", "--no-cache", "--network=default",
-		fmt.Sprintf("--build-arg=NPM_CONFIG_MIN_RELEASE_AGE=%d", loaded.Spec.MinimumReleaseAgeDays),
-		"--build-arg=NPM_CONFIG_ALLOW_GIT=none",
-		"--build-arg=NPM_CONFIG_ALLOW_REMOTE=none",
-		"--build-arg=NPM_CONFIG_SAVE_EXACT=true",
-		"--tag=" + buildTag,
-		"--file=" + filepath.Join(stage, "Dockerfile"),
-		stage,
 	}
+	buildArgs = append(buildArgs, intakePolicyBuildArgs(loaded, manager)...)
+	buildArgs = append(buildArgs,
+		"--tag="+buildTag,
+		"--file="+filepath.Join(stage, "Dockerfile"),
+		stage,
+	)
 	if err := engine.command(ctx, nil, stdout, stderr, buildArgs...); err != nil {
 		return IntakeResult{}, fmt.Errorf("capsule build failed: %w", err)
 	}
@@ -350,7 +353,7 @@ func Intake(ctx context.Context, engine Engine, loaded LoadedSpec, fetcher FeedF
 	return IntakeResult{Schema: SchemaVersion, Image: image, InputSHA256: inputDigest, Packages: len(packages), SBOM: sbom, State: loaded.StateFilename(), Feeds: feeds}, nil
 }
 
-func validateDockerfile(filename string) error {
+func validateDockerfile(filename, manager string) error {
 	info, err := os.Lstat(filename)
 	if err != nil {
 		return fmt.Errorf("read intake Dockerfile: %w", err)
@@ -367,11 +370,15 @@ func validateDockerfile(filename string) error {
 		return errors.New("intake Dockerfile cannot request secret or SSH mounts")
 	}
 	fromCount := 0
-	requiredArgs := map[string]bool{
-		"NPM_CONFIG_MIN_RELEASE_AGE": false,
-		"NPM_CONFIG_ALLOW_GIT":       false,
-		"NPM_CONFIG_ALLOW_REMOTE":    false,
-		"NPM_CONFIG_SAVE_EXACT":      false,
+	requiredArgs := map[string]bool{}
+	if manager == "bun" {
+		requiredArgs["BUN_CONFIG_MINIMUM_RELEASE_AGE"] = false
+		requiredArgs["BUN_CONFIG_REGISTRY"] = false
+	} else {
+		requiredArgs["NPM_CONFIG_MIN_RELEASE_AGE"] = false
+		requiredArgs["NPM_CONFIG_ALLOW_GIT"] = false
+		requiredArgs["NPM_CONFIG_ALLOW_REMOTE"] = false
+		requiredArgs["NPM_CONFIG_SAVE_EXACT"] = false
 	}
 	for _, rawLine := range strings.Split(string(contents), "\n") {
 		line := strings.TrimSpace(rawLine)
@@ -414,6 +421,37 @@ func validateDockerfile(filename string) error {
 		}
 	}
 	return nil
+}
+
+func intakePackageManager(loaded LoadedSpec) (string, string, error) {
+	if loaded.Spec.Resolver != nil {
+		return loaded.Spec.Resolver.packageManager()
+	}
+	switch filepath.Base(loaded.Spec.Intake.Lockfile) {
+	case "package-lock.json":
+		return "npm", "", nil
+	case "bun.lock":
+		return "bun", "", nil
+	case "bun.lockb":
+		return "", "", errors.New("binary bun.lockb is unsupported; migrate to the reviewable text bun.lock format")
+	default:
+		return "", "", fmt.Errorf("unsupported dependency lockfile: %s", loaded.Spec.Intake.Lockfile)
+	}
+}
+
+func intakePolicyBuildArgs(loaded LoadedSpec, manager string) []string {
+	if manager == "bun" {
+		return []string{
+			fmt.Sprintf("--build-arg=BUN_CONFIG_MINIMUM_RELEASE_AGE=%d", loaded.Spec.MinimumReleaseAgeDays*24*60*60),
+			"--build-arg=BUN_CONFIG_REGISTRY=https://registry.npmjs.org/",
+		}
+	}
+	return []string{
+		fmt.Sprintf("--build-arg=NPM_CONFIG_MIN_RELEASE_AGE=%d", loaded.Spec.MinimumReleaseAgeDays),
+		"--build-arg=NPM_CONFIG_ALLOW_GIT=none",
+		"--build-arg=NPM_CONFIG_ALLOW_REMOTE=none",
+		"--build-arg=NPM_CONFIG_SAVE_EXACT=true",
+	}
 }
 
 func regexpDigestBase(base string) bool {

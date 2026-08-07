@@ -15,7 +15,7 @@ import (
 func TestResolveRunsCredentialBlindAndReturnsOnlyCandidateFiles(t *testing.T) {
 	loaded := resolverProject(t)
 	manifestFilename := filepath.Join(loaded.SourceRoot, "package.json")
-	manifest := `{"name":"fixture","private":true,"scripts":{"preinstall":"touch /workspace/owned"}}`
+	manifest := `{"name":"fixture","private":true,"packageManager":"npm@12.0.2","scripts":{"preinstall":"touch /workspace/owned"}}`
 	if err := os.WriteFile(manifestFilename, []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +175,117 @@ func TestResolverRequiresPinnedNPM12ImageAndExactPackageVersion(t *testing.T) {
 	}
 }
 
+func TestResolveBunBootstrapsTextLockCredentialBlind(t *testing.T) {
+	loaded := testProject(t, true)
+	loaded.Spec.Intake = &IntakeSpec{
+		Dockerfile: "Dockerfile",
+		Inputs:     []string{"package.json", "bun.lock", "bunfig.toml"},
+		Lockfile:   "bun.lock",
+	}
+	loaded.Spec.Resolver = &ResolverSpec{
+		Image:      "docker.io/oven/bun@sha256:" + strings.Repeat("e", 64),
+		BunVersion: "1.3.14",
+	}
+	if err := os.WriteFile(filepath.Join(loaded.SourceRoot, "package.json"), []byte(`{"name":"fixture","private":true,"packageManager":"bun@1.3.14","trustedDependencies":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loaded.SourceRoot, "bunfig.toml"), []byte("[install]\nminimumReleaseAge = 259200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Validate(false); err != nil {
+		t.Fatal(err)
+	}
+	var invocations [][]string
+	engine := Engine{execute: func(_ context.Context, _ io.Reader, stdout, _ io.Writer, args ...string) error {
+		invocations = append(invocations, append([]string(nil), args...))
+		joined := strings.Join(args, "\n")
+		if strings.HasSuffix(joined, "bun\n--version") {
+			_, _ = io.WriteString(stdout, "1.3.14\n")
+			return nil
+		}
+		stage := resolverStageFromArgs(t, args)
+		addBunDependencyToResolverFixture(t, stage, "gamma", "3.2.1")
+		return nil
+	}}
+	output := filepath.Join(loaded.SourceRoot, "bun-resolution")
+	result, err := Resolve(context.Background(), engine, loaded, ResolveRequest{
+		Package:         "gamma@3.2.1",
+		OutputDirectory: output,
+	}, staticFetcher{"https://example.test/deny.csv": cleanFeed()}, time.Now(), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Lockfile != filepath.Join(output, "bun.lock") || result.Packages != 1 || len(invocations) != 2 {
+		t.Fatalf("unexpected Bun resolution: %#v invocations=%#v", result, invocations)
+	}
+	resolution := strings.Join(invocations[1], "\n")
+	for _, required := range []string{"--read-only", "--network=bridge", "--ignore-scripts", "--exact", "--minimum-release-age=259200", "--registry=https://registry.npmjs.org/", "bun", "add", "gamma@3.2.1"} {
+		if !strings.Contains(resolution, required) {
+			t.Fatalf("Bun resolver invocation lacks %q: %s", required, resolution)
+		}
+	}
+	for _, prohibited := range []string{"\nnpm\n", "HOME=/Users", "SSH_AUTH_SOCK", "DOCKER_CONFIG"} {
+		if strings.Contains(resolution, prohibited) {
+			t.Fatalf("Bun resolver exposed %q: %s", prohibited, resolution)
+		}
+	}
+}
+
+func TestResolveBunRemovalReturnsReviewableEmptyLock(t *testing.T) {
+	loaded := testProject(t, true)
+	loaded.Spec.Intake = &IntakeSpec{Dockerfile: "Dockerfile", Inputs: []string{"package.json", "bun.lock", "bunfig.toml"}, Lockfile: "bun.lock"}
+	loaded.Spec.Resolver = &ResolverSpec{Image: "docker.io/oven/bun@sha256:" + strings.Repeat("e", 64), BunVersion: "1.3.14"}
+	manifest := `{"name":"fixture","private":true,"packageManager":"bun@1.3.14","trustedDependencies":[],"devDependencies":{"typescript":"5.9.2"}}`
+	if err := os.WriteFile(filepath.Join(loaded.SourceRoot, "package.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock := `{"lockfileVersion":1,"packages":{"typescript":["typescript@5.9.2","",{},"sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="]}}`
+	if err := os.WriteFile(filepath.Join(loaded.SourceRoot, "bun.lock"), []byte(lock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loaded.SourceRoot, "bunfig.toml"), []byte("[install]\nminimumReleaseAge = 259200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := Engine{execute: func(_ context.Context, _ io.Reader, stdout, _ io.Writer, args ...string) error {
+		if strings.HasSuffix(strings.Join(args, "\n"), "bun\n--version") {
+			_, _ = io.WriteString(stdout, "1.3.14\n")
+			return nil
+		}
+		stage := resolverStageFromArgs(t, args)
+		candidate, err := os.ReadFile(filepath.Join(stage, "package.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value map[string]any
+		if err := json.Unmarshal(candidate, &value); err != nil {
+			t.Fatal(err)
+		}
+		delete(value, "devDependencies")
+		candidate, _ = json.Marshal(value)
+		if err := os.WriteFile(filepath.Join(stage, "package.json"), candidate, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(stage, "bun.lock")); err != nil {
+			t.Fatal(err)
+		}
+		return nil
+	}}
+	output := filepath.Join(loaded.SourceRoot, "remove-resolution")
+	result, err := Resolve(context.Background(), engine, loaded, ResolveRequest{
+		Package: "typescript", Remove: true, OutputDirectory: output,
+	}, staticFetcher{"https://example.test/deny.csv": cleanFeed()}, time.Now(), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Packages != 0 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	packages, err := ParseBunLock(filepath.Join(output, "bun.lock"))
+	if err != nil || len(packages) != 0 {
+		t.Fatalf("empty candidate lock is not reviewable: packages=%#v err=%v", packages, err)
+	}
+}
+
 func resolverProject(t *testing.T) LoadedSpec {
 	t.Helper()
 	loaded := testProject(t, true)
@@ -228,6 +339,33 @@ func addDependencyToResolverFixture(t *testing.T, stage, name, version string) {
   }
 }`
 	if err := os.WriteFile(filepath.Join(stage, "package-lock.json"), []byte(lockfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func addBunDependencyToResolverFixture(t *testing.T, stage, name, version string) {
+	t.Helper()
+	manifestFilename := filepath.Join(stage, "package.json")
+	contents, err := os.ReadFile(manifestFilename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest["dependencies"] = map[string]any{name: version}
+	contents, _ = json.Marshal(manifest)
+	if err := os.WriteFile(manifestFilename, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lockfile := `{
+  "lockfileVersion": 1,
+  "packages": {
+    "gamma": ["gamma@3.2.1", "", {}, "sha512-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=="],
+  },
+}`
+	if err := os.WriteFile(filepath.Join(stage, "bun.lock"), []byte(lockfile), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

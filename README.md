@@ -11,7 +11,7 @@ The repository also ships `capsule-promoter`, a deliberately separate command th
 
 ## Status
 
-`capsulectl` is pre-1.0 security software. Its current intake and resolver implementation supports npm `package-lock.json` versions 2 and 3. Review the [security model](#security-model), pin release binaries by checksum, and validate the boundary for each repository before relying on it.
+`capsulectl` is pre-1.0 security software. Intake and resolution support npm `package-lock.json` versions 2 and 3 and reviewable Bun `bun.lock` versions 0 and 1. Binary `bun.lockb` and non-registry Bun resolutions fail closed. Review the [security model](#security-model), pin release binaries by checksum, and validate the boundary for each repository before relying on it.
 
 ## Requirements
 
@@ -19,7 +19,7 @@ The repository also ships `capsule-promoter`, a deliberately separate command th
 - Docker Engine.
 - macOS: Docker must use a [Colima](https://github.com/abiosoft/colima) VM context.
 - Linux: run on an ephemeral GitHub Actions runner, or set `CAPSULECTL_EPHEMERAL_CI=1` only when the machine is independently guaranteed to be disposable.
-- Dependency resolution: a registry image pinned by SHA-256 and containing the exact configured npm 12+ version.
+- Dependency resolution: a registry image pinned by SHA-256 and containing the exact configured npm 12+ or Bun version.
 
 ## Install
 
@@ -36,7 +36,31 @@ For production use, prefer release archives and verify them against the publishe
 
 ## Quick start
 
-Create `.capsule/capsule.json` and `.capsule/Dockerfile`. Complete examples live in [`docs/examples`](docs/examples).
+For Bun and TypeScript, start with a `package.json`; the lockfile may be absent on the first dependency resolution. One command pins Bun 1.3.14, makes lifecycle trust explicit, writes the cooldown and registry policy, and creates the repository capsule:
+
+```sh
+capsulectl init \
+  --manager bun \
+  --source-uri https://github.com/example-org/example
+```
+
+Resolve an exact dependency without exposing host credentials, review the two candidate files, and accept them explicitly:
+
+```sh
+capsulectl resolve \
+  --spec .capsule/capsule.json \
+  --package typescript@5.9.2 \
+  --dev \
+  --output resolution
+cp resolution/package.json resolution/bun.lock .
+rm -rf resolution
+capsulectl intake --spec .capsule/capsule.json
+capsulectl run --spec .capsule/capsule.json -- bun test
+```
+
+The generated policy uses the immutable official Bun 1.3.14 image digest, the text lockfile, registry-only exact resolutions, a three-day release cooldown, and an explicit `trustedDependencies` array. Use `--resolver-image` with a matching reviewed digest when selecting another exact Bun version.
+
+For npm, create `.capsule/capsule.json` and `.capsule/Dockerfile`. Complete npm examples live in [`docs/examples`](docs/examples).
 
 ```json
 {
@@ -89,6 +113,16 @@ capsulectl run --spec .capsule/capsule.json
 
 ## Commands
 
+### `init`
+
+Scaffold Bun policy in an existing project without running Bun or dependency code:
+
+```sh
+capsulectl init --manager bun --source-uri https://github.com/example-org/example
+```
+
+The command refuses to overwrite an existing `.capsule`, preserves an existing `trustedDependencies` list, and pins the package manager and resolver image. It creates `bunfig.toml` only when absent.
+
 ### `resolve`
 
 Produce candidate dependency files in a new directory without modifying the repository:
@@ -100,9 +134,9 @@ capsulectl resolve \
   --output resolution
 ```
 
-Use `--dev` for a development dependency or `--remove` with a package name for removal. Resolution uses a digest-pinned image, exact npm 12+, no inherited environment or credentials, disabled lifecycle scripts, disabled git/remote dependencies, a release cooldown, and live deny-feed checks before and after npm runs.
+Use `--dev` for a development dependency or `--remove` with a package name for removal. Resolution uses a digest-pinned image, an exact npm 12+ or Bun version, no inherited environment or credentials, disabled lifecycle scripts, registry-only exact resolutions, a release cooldown, and live deny-feed checks before and after the package manager runs.
 
-Review the returned `package.json` and `package-lock.json`; `capsulectl` never applies them automatically.
+Review the returned `package.json` and lockfile; `capsulectl` never applies them automatically.
 
 ### `intake`
 

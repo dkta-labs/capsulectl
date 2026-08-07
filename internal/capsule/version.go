@@ -31,6 +31,7 @@ func printCapsulectlUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage: capsulectl <command> [options]")
 	fmt.Fprintln(output)
 	fmt.Fprintln(output, "Commands:")
+	fmt.Fprintln(output, "  init     Scaffold a credential-blind Bun capsule")
 	fmt.Fprintln(output, "  plan     Print the hardened runtime invocation")
 	fmt.Fprintln(output, "  resolve  Produce reviewed candidate dependency files")
 	fmt.Fprintln(output, "  intake   Build and record a credential-blind dependency image")

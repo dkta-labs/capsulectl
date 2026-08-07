@@ -183,7 +183,7 @@ func TestDockerfileRequiresPinnedBasesAndRejectsSecretMounts(t *testing.T) {
 		if err := os.WriteFile(filename, []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := validateDockerfile(filename); err == nil || !strings.Contains(err.Error(), expected) {
+		if err := validateDockerfile(filename, "npm"); err == nil || !strings.Contains(err.Error(), expected) {
 			t.Fatalf("Dockerfile %q was not rejected for %s: %v", contents, expected, err)
 		}
 	}
@@ -205,7 +205,7 @@ func testProject(t *testing.T, intake bool) LoadedSpec {
     "node_modules/@scope/beta": {"name": "@scope/beta", "version": "2.0.0"}
   }
 }`
-	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"name":"fixture","private":true}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"name":"fixture","private":true,"packageManager":"npm@12.0.2"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "package-lock.json"), []byte(lock), 0o600); err != nil {
