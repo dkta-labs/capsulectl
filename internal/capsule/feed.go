@@ -1,6 +1,7 @@
 package capsule
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/csv"
@@ -113,7 +114,7 @@ func CheckFeeds(ctx context.Context, fetcher FeedFetcher, feeds []string, packag
 }
 
 func parseSocketCSV(contents []byte) ([]affectedPackage, error) {
-	reader := csv.NewReader(strings.NewReader(string(contents)))
+	reader := csv.NewReader(bytes.NewReader(contents))
 	reader.FieldsPerRecord = -1
 	header, err := reader.Read()
 	if err != nil {
