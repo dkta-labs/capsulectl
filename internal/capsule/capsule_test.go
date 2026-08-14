@@ -362,6 +362,8 @@ RUN test "$NPM_CONFIG_MIN_RELEASE_AGE" = "3" \
 COPY fixture/package-a /workspace/node_modules/package-a
 COPY fixture/package-b /workspace/node_modules/package-b
 RUN ln -s index.mjs /workspace/node_modules/package-b/alias.mjs \
+    && chmod -R a+rX /workspace/node_modules \
+    && chmod 755 /workspace/node_modules/package-b/bin/cli.mjs \
     && mkdir -p /workspace/node_modules/.bin \
     && printf '#!/bin/sh\nexec node /workspace/node_modules/package-a/index.mjs\n' > /workspace/node_modules/.bin/capsule-fixture \
     && chmod 755 /workspace/node_modules/.bin/capsule-fixture
