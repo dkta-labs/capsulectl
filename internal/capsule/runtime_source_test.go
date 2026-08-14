@@ -37,6 +37,40 @@ func TestPrepareRuntimeSourceExcludesHostDependenciesAndGitMetadata(t *testing.T
 	}
 }
 
+func TestPrepareRuntimeSourceAtUsesSelectedDaemonVisibleRoot(t *testing.T) {
+	sourceRoot := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceRoot, "app.js"), []byte("safe\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := prepareRuntimeSourceAt(sourceRoot, stageRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(stage)
+	if filepath.Dir(stage) != stageRoot {
+		t.Fatalf("runtime source staged outside selected daemon-visible root: %s", stage)
+	}
+	relative, err := filepath.Rel(sourceRoot, stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relative != ".." && !hasParentPrefix(relative) {
+		t.Fatalf("runtime source staged inside source root: %s", stage)
+	}
+	if _, err := os.Stat(filepath.Join(stage, "app.js")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrepareRuntimeSourceAtRejectsSourceDescendantStageRoot(t *testing.T) {
+	sourceRoot := t.TempDir()
+	stageRoot := filepath.Join(sourceRoot, ".capsulectl-source")
+	if _, err := prepareRuntimeSourceAt(sourceRoot, stageRoot); err == nil || !strings.Contains(err.Error(), "outside the source root") {
+		t.Fatalf("runtime source stage inside source root was accepted: %v", err)
+	}
+}
+
 func TestPrepareRuntimeSourceRejectsSymlinks(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "target"), []byte("value"), 0o600); err != nil {

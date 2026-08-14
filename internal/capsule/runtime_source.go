@@ -12,7 +12,59 @@ const maxRuntimeSourceFiles = 200000
 const maxRuntimeSourceBytes int64 = 2 << 30
 
 func prepareRuntimeSource(sourceRoot string) (string, error) {
-	stage, err := os.MkdirTemp(filepath.Dir(sourceRoot), ".capsulectl-source-")
+	stageRoot, err := runtimeSourceStageRoot(sourceRoot)
+	if err != nil {
+		return "", err
+	}
+	return prepareRuntimeSourceAt(sourceRoot, stageRoot)
+}
+
+func runtimeSourceStageRoot(sourceRoot string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve daemon-visible runtime staging root: %w", err)
+	}
+	homeInfo, err := os.Stat(home)
+	if err != nil {
+		return "", fmt.Errorf("inspect daemon-visible runtime staging root: %w", err)
+	}
+	if !homeInfo.IsDir() {
+		return "", errors.New("daemon-visible runtime staging root is not a directory")
+	}
+	if err := validateRuntimeStageRoot(sourceRoot, home); err != nil {
+		return "", err
+	}
+	return home, nil
+}
+
+func validateRuntimeStageRoot(sourceRoot, stageRoot string) error {
+	sourceAbsolute, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return err
+	}
+	stageAbsolute, err := filepath.Abs(stageRoot)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(sourceAbsolute, stageAbsolute)
+	if err != nil {
+		return err
+	}
+	if relative == "." || (relative != ".." && !hasParentPrefix(relative)) {
+		return errors.New("daemon-visible runtime staging root must be outside the source root")
+	}
+	return nil
+}
+
+func hasParentPrefix(path string) bool {
+	return len(path) >= 3 && path[:3] == ".."+string(filepath.Separator)
+}
+
+func prepareRuntimeSourceAt(sourceRoot, stageRoot string) (string, error) {
+	if err := validateRuntimeStageRoot(sourceRoot, stageRoot); err != nil {
+		return "", err
+	}
+	stage, err := os.MkdirTemp(stageRoot, ".capsulectl-source-")
 	if err != nil {
 		return "", err
 	}
