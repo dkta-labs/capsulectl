@@ -3,6 +3,7 @@ package capsule
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -51,11 +52,15 @@ func TestPrepareRuntimeSourceAtUsesSelectedDaemonVisibleRoot(t *testing.T) {
 	if filepath.Dir(stage) != stageRoot {
 		t.Fatalf("runtime source staged outside selected daemon-visible root: %s", stage)
 	}
-	relative, err := filepath.Rel(sourceRoot, stage)
+	sourceInfo, err := os.Stat(sourceRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if relative != ".." && !hasParentPrefix(relative) {
+	stageParentInfo, err := os.Stat(filepath.Dir(stage))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(sourceInfo, stageParentInfo) {
 		t.Fatalf("runtime source staged inside source root: %s", stage)
 	}
 	if _, err := os.Stat(filepath.Join(stage, "app.js")); err != nil {
@@ -107,6 +112,36 @@ func TestPrepareRuntimeSourceAtRejectsSourceDescendantStageRoot(t *testing.T) {
 	}
 	if _, err := prepareRuntimeSourceAt(sourceRoot, filepath.Join(outer, "stage")); err == nil || !strings.Contains(err.Error(), "outside the source root") {
 		t.Fatalf("symlinked runtime stage inside source root was accepted: %v", err)
+	}
+}
+
+func TestValidateRuntimeStageRootRejectsSameFileAlias(t *testing.T) {
+	sourceRoot := t.TempDir()
+	aliasParent := t.TempDir()
+	alias := filepath.Join(aliasParent, "source-alias")
+	if err := os.Symlink(sourceRoot, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRuntimeStageRoot(sourceRoot, filepath.Join(alias, "stage")); err == nil || !strings.Contains(err.Error(), "outside the source root") {
+		t.Fatalf("same-file runtime stage alias was accepted: %v", err)
+	}
+}
+
+func TestValidateRuntimeStageRootRejectsDarwinAlternateCaseAlias(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("alternate-case alias requires Darwin filesystem semantics")
+	}
+	root := t.TempDir()
+	sourceRoot := filepath.Join(root, "SourceRoot")
+	if err := os.Mkdir(sourceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alternate := filepath.Join(root, "sOURCEROOT")
+	if _, err := os.Stat(alternate); err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+	if err := validateRuntimeStageRoot(sourceRoot, filepath.Join(alternate, "stage")); err == nil || !strings.Contains(err.Error(), "outside the source root") {
+		t.Fatalf("alternate-case runtime stage alias was accepted: %v", err)
 	}
 }
 

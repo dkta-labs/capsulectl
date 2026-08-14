@@ -54,49 +54,53 @@ func runtimeSourceStageRootFor(sourceRoot, operatingSystem, home string) (string
 }
 
 func validateRuntimeStageRoot(sourceRoot, stageRoot string) error {
-	sourceAbsolute, err := canonicalRuntimePath(sourceRoot)
+	sourceInfo, err := os.Stat(sourceRoot)
 	if err != nil {
 		return err
 	}
-	stageAbsolute, err := canonicalRuntimePath(stageRoot)
-	if err != nil {
-		return err
-	}
-	relative, err := filepath.Rel(sourceAbsolute, stageAbsolute)
-	if err != nil {
-		return err
-	}
-	if relative == "." || (relative != ".." && !hasParentPrefix(relative)) {
-		return errors.New("daemon-visible runtime staging root must be outside the source root")
+	for candidate := stageRoot; ; candidate = filepath.Dir(candidate) {
+		candidateInfo, err := os.Stat(candidate)
+		if err == nil {
+			if os.SameFile(sourceInfo, candidateInfo) {
+				return errors.New("daemon-visible runtime staging root must be outside the source root")
+			}
+			resolved, resolveErr := filepath.EvalSymlinks(candidate)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			inside, ancestorErr := runtimePathHasSourceAncestor(resolved, sourceInfo)
+			if ancestorErr != nil {
+				return ancestorErr
+			}
+			if inside {
+				return errors.New("daemon-visible runtime staging root must be outside the source root")
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
 	}
 	return nil
 }
 
-func canonicalRuntimePath(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
+func runtimePathHasSourceAncestor(path string, sourceInfo os.FileInfo) (bool, error) {
+	for candidate := path; ; candidate = filepath.Dir(candidate) {
+		info, err := os.Stat(candidate)
+		if err == nil {
+			if os.SameFile(sourceInfo, info) {
+				return true, nil
+			}
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return false, nil
+		}
 	}
-	resolved, err := filepath.EvalSymlinks(absolute)
-	if err == nil {
-		return filepath.Clean(resolved), nil
-	}
-	if !os.IsNotExist(err) {
-		return "", err
-	}
-	parent := filepath.Dir(absolute)
-	if parent == absolute {
-		return "", err
-	}
-	resolvedParent, parentErr := canonicalRuntimePath(parent)
-	if parentErr != nil {
-		return "", parentErr
-	}
-	return filepath.Join(resolvedParent, filepath.Base(absolute)), nil
-}
-
-func hasParentPrefix(path string) bool {
-	return len(path) >= 3 && path[:3] == ".."+string(filepath.Separator)
 }
 
 func prepareRuntimeSourceAt(sourceRoot, stageRoot string) (string, error) {
