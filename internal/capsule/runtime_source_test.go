@@ -63,6 +63,35 @@ func TestPrepareRuntimeSourceAtUsesSelectedDaemonVisibleRoot(t *testing.T) {
 	}
 }
 
+func TestRuntimeSourceStageRootSelectionPreservesDaemonVisibility(t *testing.T) {
+	root := t.TempDir()
+	sourceRoot := filepath.Join(root, "project")
+	daemonHome := filepath.Join(root, "home")
+	for _, directory := range []string{sourceRoot, daemonHome} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, testCase := range []struct {
+		name            string
+		operatingSystem string
+		expected        string
+	}{
+		{name: "linux", operatingSystem: "linux", expected: root},
+		{name: "darwin", operatingSystem: "darwin", expected: daemonHome},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			stageRoot, err := runtimeSourceStageRootFor(sourceRoot, testCase.operatingSystem, daemonHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stageRoot != testCase.expected {
+				t.Fatalf("selected staging root %s, want %s", stageRoot, testCase.expected)
+			}
+		})
+	}
+}
+
 func TestPrepareRuntimeSourceAtRejectsSourceDescendantStageRoot(t *testing.T) {
 	sourceRoot := t.TempDir()
 	stageRoot := filepath.Join(sourceRoot, ".capsulectl-source")

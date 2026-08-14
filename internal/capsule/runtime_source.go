@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const maxRuntimeSourceFiles = 200000
@@ -20,9 +21,24 @@ func prepareRuntimeSource(sourceRoot string) (string, error) {
 }
 
 func runtimeSourceStageRoot(sourceRoot string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve daemon-visible runtime staging root: %w", err)
+	home := ""
+	if runtime.GOOS == "darwin" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve daemon-visible runtime staging root: %w", err)
+		}
+	}
+	return runtimeSourceStageRootFor(sourceRoot, runtime.GOOS, home)
+}
+
+func runtimeSourceStageRootFor(sourceRoot, operatingSystem, home string) (string, error) {
+	if operatingSystem != "darwin" {
+		stageRoot := filepath.Dir(sourceRoot)
+		if err := validateRuntimeStageRoot(sourceRoot, stageRoot); err != nil {
+			return "", err
+		}
+		return stageRoot, nil
 	}
 	homeInfo, err := os.Stat(home)
 	if err != nil {
