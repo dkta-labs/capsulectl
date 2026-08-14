@@ -34,5 +34,11 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race ./...
+      - name: Real Docker runtime layout integration
+        if: matrix.os == 'ubuntu-24.04'
+        env:
+          CAPSULECTL_EPHEMERAL_CI: "1"
+          CAPSULECTL_REAL_DOCKER_TEST: "1"
+        run: go test -race ./internal/capsule -run '^TestRuntimeLayoutWithDocker$'
       - name: Build commands
         run: go build ./cmd/capsulectl ./cmd/capsule-promoter
