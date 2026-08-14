@@ -1,0 +1,35 @@
+when:
+  - event: pull_request
+  - event: push
+    branch: main
+
+labels:
+  location: daimon
+
+clone:
+  git:
+    image: docker.io/woodpeckerci/plugin-git:2.9.2@sha256:a36586dfe77e9c5d9b5bff3ad37f18158eb12036aa9e9908e2e813ee6029573e
+    settings:
+      partial: false
+      depth: 50
+
+steps:
+  - name: format
+    image: docker.io/library/golang:1.24.0@sha256:3f7444391c51a11a039bf0359ee81cc64e663c17d787ad0e637a4de1a3f62a71
+    commands:
+      - test -z "$(gofmt -l .)"
+
+  - name: vet
+    image: docker.io/library/golang:1.24.0@sha256:3f7444391c51a11a039bf0359ee81cc64e663c17d787ad0e637a4de1a3f62a71
+    commands:
+      - go vet ./...
+
+  - name: test
+    image: docker.io/library/golang:1.24.0@sha256:3f7444391c51a11a039bf0359ee81cc64e663c17d787ad0e637a4de1a3f62a71
+    commands:
+      - go test -race ./...
+
+  - name: build
+    image: docker.io/library/golang:1.24.0@sha256:3f7444391c51a11a039bf0359ee81cc64e663c17d787ad0e637a4de1a3f62a71
+    commands:
+      - go build ./cmd/capsulectl ./cmd/capsule-promoter
