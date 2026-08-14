@@ -18,7 +18,7 @@ import (
 
 const (
 	SchemaVersion       = 1
-	intakePolicyVersion = 3
+	intakePolicyVersion = 4
 )
 
 var (
@@ -373,13 +373,17 @@ func (loaded LoadedSpec) PackagesForImage(state *State) ([]Package, error) {
 }
 
 func (loaded LoadedSpec) InputDigest() (string, error) {
+	return loaded.inputDigest(intakePolicyVersion)
+}
+
+func (loaded LoadedSpec) inputDigest(policyVersion int) (string, error) {
 	if loaded.Spec.Intake == nil {
 		return "", errors.New("intake is not configured")
 	}
 	hash := sha256.New()
 	hash.Write([]byte("$intake-policy-version"))
 	hash.Write([]byte{0})
-	hash.Write([]byte(strconv.Itoa(intakePolicyVersion)))
+	hash.Write([]byte(strconv.Itoa(policyVersion)))
 	hash.Write([]byte{0})
 	hash.Write([]byte("$minimum-release-age-days"))
 	hash.Write([]byte{0})

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -271,6 +272,114 @@ func TestIntakeBuildsFromExplicitInputsAndInvalidatesChangedLockfile(t *testing.
 	}
 }
 
+func TestPreChangeRuntimeStateRejectedAfterLayoutPolicyBump(t *testing.T) {
+	loaded := testProject(t, true)
+	image := "sha256:" + strings.Repeat("e", 64)
+	oldDigest, err := loaded.inputDigest(intakePolicyVersion - 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := State{
+		Schema:      SchemaVersion,
+		Image:       image,
+		InputSHA256: oldDigest,
+		BuiltAt:     time.Now().UTC().Format(time.RFC3339),
+		Packages:    []Package{{Name: "alpha", Version: "1.2.3"}},
+	}
+	stateContents, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(loaded.StateFilename(), stateContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	engine := Engine{execute: func(_ context.Context, _ io.Reader, _ io.Writer, _ io.Writer, args ...string) error {
+		called = true
+		return nil
+	}}
+	feed := staticFetcher{"https://example.test/deny.csv": cleanFeed()}
+	if err := Run(context.Background(), engine, loaded, []string{"node", "--test"}, feed, time.Now(), nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "changed after intake") {
+		t.Fatalf("pre-change runtime state was accepted: %v", err)
+	}
+	if called {
+		t.Fatal("pre-change runtime state reached Docker execution")
+	}
+
+	state.InputSHA256 = mustInputDigest(t, loaded)
+	stateContents, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(loaded.StateFilename(), stateContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(context.Background(), engine, loaded, []string{"node", "--test"}, feed, time.Now(), nil, io.Discard, io.Discard); err != nil {
+		t.Fatalf("fresh runtime state was rejected: %v", err)
+	}
+	if !called {
+		t.Fatal("fresh runtime state did not reach Docker execution")
+	}
+}
+
+func TestRuntimeLayoutWithDocker(t *testing.T) {
+	if os.Getenv("CAPSULECTL_REAL_DOCKER_TEST") != "1" {
+		t.Skip("set CAPSULECTL_REAL_DOCKER_TEST=1 to run the ephemeral Docker integration")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("the real Docker integration runs only on Linux CI")
+	}
+	engine, err := DiscoverEngine(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := engine.Close(); err != nil {
+			t.Errorf("close Docker engine: %v", err)
+		}
+	}()
+
+	loaded := testProject(t, true)
+	writeDockerESMPackageFixture(t, loaded.SourceRoot)
+	loaded.Spec.Intake.Inputs = []string{
+		"package.json",
+		"package-lock.json",
+		"fixture/package-a/package.json",
+		"fixture/package-a/index.mjs",
+		"fixture/package-b/package.json",
+		"fixture/package-b/index.mjs",
+		"fixture/package-b/bin/cli.mjs",
+	}
+	dockerfile := `FROM node@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+ARG NPM_CONFIG_MIN_RELEASE_AGE
+ARG NPM_CONFIG_ALLOW_GIT
+ARG NPM_CONFIG_ALLOW_REMOTE
+ARG NPM_CONFIG_SAVE_EXACT
+RUN test "$NPM_CONFIG_MIN_RELEASE_AGE" = "3" \
+    && test "$NPM_CONFIG_ALLOW_GIT" = "none" \
+    && test "$NPM_CONFIG_ALLOW_REMOTE" = "none" \
+    && test "$NPM_CONFIG_SAVE_EXACT" = "true"
+COPY fixture/package-a /workspace/node_modules/package-a
+COPY fixture/package-b /workspace/node_modules/package-b
+RUN ln -s index.mjs /workspace/node_modules/package-b/alias.mjs \
+    && mkdir -p /workspace/node_modules/.bin \
+    && printf '#!/bin/sh\nexec node /workspace/node_modules/package-a/index.mjs\n' > /workspace/node_modules/.bin/capsule-fixture \
+    && chmod 755 /workspace/node_modules/.bin/capsule-fixture
+`
+	if err := os.WriteFile(filepath.Join(loaded.Directory, loaded.Spec.Intake.Dockerfile), []byte(dockerfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	feed := staticFetcher{"https://example.test/deny.csv": cleanFeed()}
+	if _, err := Intake(context.Background(), engine, loaded, feed, time.Now().UTC(), io.Discard, io.Discard); err != nil {
+		t.Fatalf("actual Docker intake failed: %v", err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := Run(context.Background(), engine, loaded, []string{"capsule-fixture"}, feed, time.Now().UTC(), nil, io.Discard, io.Discard); err != nil {
+			t.Fatalf("actual Docker runtime attempt %d failed: %v", attempt, err)
+		}
+	}
+}
+
 func TestFeedBlocksExactMaliciousArtifactBeforeBuild(t *testing.T) {
 	loaded := testProject(t, true)
 	feed := staticFetcher{"https://example.test/deny.csv": []byte("Ecosystem,Namespace,Name,Version,Artifact\nnpm,,alpha,1.2.3,alpha-1.2.3.tgz\n")}
@@ -387,6 +496,64 @@ func writeESMPackageFixture(t *testing.T, nodeModules string) {
 			if err := os.Symlink("index.mjs", filepath.Join(packageRoot, "alias.mjs")); err != nil {
 				t.Fatal(err)
 			}
+		}
+	}
+}
+
+func writeDockerESMPackageFixture(t *testing.T, sourceRoot string) {
+	t.Helper()
+	files := map[string]struct {
+		contents string
+		mode     os.FileMode
+	}{
+		"fixture/package-a/package.json": {
+			contents: `{"name":"package-a","type":"module","exports":"./index.mjs","dependencies":{"package-b":"1.0.0"}}`,
+			mode:     0o644,
+		},
+		"fixture/package-a/index.mjs": {
+			contents: `import { stat, writeFile } from "node:fs/promises";
+import { sibling } from "package-b";
+const packageDirectory = await stat(new URL("./", import.meta.url));
+const moduleFile = await stat(new URL("./index.mjs", import.meta.url));
+if (packageDirectory.uid !== 0 || packageDirectory.gid !== 0 || moduleFile.uid !== 0 || moduleFile.gid !== 0) {
+  throw new Error("dependency ownership was not root");
+}
+if (sibling !== "resolved") throw new Error("sibling import failed");
+try {
+  await writeFile(new URL("./write-probe", import.meta.url), "must fail");
+  throw new Error("dependency tree is writable");
+} catch (error) {
+  if (error?.code !== "EACCES" && error?.code !== "EROFS") throw error;
+}
+`,
+			mode: 0o644,
+		},
+		"fixture/package-b/package.json": {
+			contents: `{"name":"package-b","type":"module","exports":"./index.mjs"}`,
+			mode:     0o644,
+		},
+		"fixture/package-b/index.mjs": {
+			contents: `import { lstat, stat } from "node:fs/promises";
+const alias = await lstat(new URL("./alias.mjs", import.meta.url));
+if (!alias.isSymbolicLink()) throw new Error("dependency symlink was not preserved");
+const executable = await stat(new URL("./bin/cli.mjs", import.meta.url));
+if ((executable.mode & 0o111) === 0) throw new Error("dependency executable bit was not preserved");
+export const sibling = "resolved";
+`,
+			mode: 0o644,
+		},
+		"fixture/package-b/bin/cli.mjs": {
+			contents: "#!/usr/bin/env node\n",
+			mode:     0o755,
+		},
+	}
+	for relative, file := range files {
+		filename := filepath.Join(sourceRoot, relative)
+		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filename, []byte(file.contents), file.mode); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
