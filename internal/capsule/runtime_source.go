@@ -54,11 +54,11 @@ func runtimeSourceStageRootFor(sourceRoot, operatingSystem, home string) (string
 }
 
 func validateRuntimeStageRoot(sourceRoot, stageRoot string) error {
-	sourceAbsolute, err := filepath.Abs(sourceRoot)
+	sourceAbsolute, err := canonicalRuntimePath(sourceRoot)
 	if err != nil {
 		return err
 	}
-	stageAbsolute, err := filepath.Abs(stageRoot)
+	stageAbsolute, err := canonicalRuntimePath(stageRoot)
 	if err != nil {
 		return err
 	}
@@ -70,6 +70,29 @@ func validateRuntimeStageRoot(sourceRoot, stageRoot string) error {
 		return errors.New("daemon-visible runtime staging root must be outside the source root")
 	}
 	return nil
+}
+
+func canonicalRuntimePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent := filepath.Dir(absolute)
+	if parent == absolute {
+		return "", err
+	}
+	resolvedParent, parentErr := canonicalRuntimePath(parent)
+	if parentErr != nil {
+		return "", parentErr
+	}
+	return filepath.Join(resolvedParent, filepath.Base(absolute)), nil
 }
 
 func hasParentPrefix(path string) bool {

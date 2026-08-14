@@ -98,6 +98,16 @@ func TestPrepareRuntimeSourceAtRejectsSourceDescendantStageRoot(t *testing.T) {
 	if _, err := prepareRuntimeSourceAt(sourceRoot, stageRoot); err == nil || !strings.Contains(err.Error(), "outside the source root") {
 		t.Fatalf("runtime source stage inside source root was accepted: %v", err)
 	}
+	outer := t.TempDir()
+	if err := os.Symlink(filepath.Join(sourceRoot, "nested"), filepath.Join(outer, "stage")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(sourceRoot, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareRuntimeSourceAt(sourceRoot, filepath.Join(outer, "stage")); err == nil || !strings.Contains(err.Error(), "outside the source root") {
+		t.Fatalf("symlinked runtime stage inside source root was accepted: %v", err)
+	}
 }
 
 func TestPrepareRuntimeSourceRejectsSymlinks(t *testing.T) {
