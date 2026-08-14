@@ -6,13 +6,108 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const maxRuntimeSourceFiles = 200000
 const maxRuntimeSourceBytes int64 = 2 << 30
 
 func prepareRuntimeSource(sourceRoot string) (string, error) {
-	stage, err := os.MkdirTemp(filepath.Dir(sourceRoot), ".capsulectl-source-")
+	stageRoot, err := runtimeSourceStageRoot(sourceRoot)
+	if err != nil {
+		return "", err
+	}
+	return prepareRuntimeSourceAt(sourceRoot, stageRoot)
+}
+
+func runtimeSourceStageRoot(sourceRoot string) (string, error) {
+	home := ""
+	if runtime.GOOS == "darwin" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve daemon-visible runtime staging root: %w", err)
+		}
+	}
+	return runtimeSourceStageRootFor(sourceRoot, runtime.GOOS, home)
+}
+
+func runtimeSourceStageRootFor(sourceRoot, operatingSystem, home string) (string, error) {
+	if operatingSystem != "darwin" {
+		stageRoot := filepath.Dir(sourceRoot)
+		if err := validateRuntimeStageRoot(sourceRoot, stageRoot); err != nil {
+			return "", err
+		}
+		return stageRoot, nil
+	}
+	homeInfo, err := os.Stat(home)
+	if err != nil {
+		return "", fmt.Errorf("inspect daemon-visible runtime staging root: %w", err)
+	}
+	if !homeInfo.IsDir() {
+		return "", errors.New("daemon-visible runtime staging root is not a directory")
+	}
+	if err := validateRuntimeStageRoot(sourceRoot, home); err != nil {
+		return "", err
+	}
+	return home, nil
+}
+
+func validateRuntimeStageRoot(sourceRoot, stageRoot string) error {
+	sourceInfo, err := os.Stat(sourceRoot)
+	if err != nil {
+		return err
+	}
+	for candidate := stageRoot; ; candidate = filepath.Dir(candidate) {
+		candidateInfo, err := os.Stat(candidate)
+		if err == nil {
+			if os.SameFile(sourceInfo, candidateInfo) {
+				return errors.New("daemon-visible runtime staging root must be outside the source root")
+			}
+			resolved, resolveErr := filepath.EvalSymlinks(candidate)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			inside, ancestorErr := runtimePathHasSourceAncestor(resolved, sourceInfo)
+			if ancestorErr != nil {
+				return ancestorErr
+			}
+			if inside {
+				return errors.New("daemon-visible runtime staging root must be outside the source root")
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
+	}
+	return nil
+}
+
+func runtimePathHasSourceAncestor(path string, sourceInfo os.FileInfo) (bool, error) {
+	for candidate := path; ; candidate = filepath.Dir(candidate) {
+		info, err := os.Stat(candidate)
+		if err == nil {
+			if os.SameFile(sourceInfo, info) {
+				return true, nil
+			}
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return false, nil
+		}
+	}
+}
+
+func prepareRuntimeSourceAt(sourceRoot, stageRoot string) (string, error) {
+	if err := validateRuntimeStageRoot(sourceRoot, stageRoot); err != nil {
+		return "", err
+	}
+	stage, err := os.MkdirTemp(stageRoot, ".capsulectl-source-")
 	if err != nil {
 		return "", err
 	}
