@@ -374,8 +374,9 @@ RUN ln -s index.mjs /workspace/node_modules/package-b/alias.mjs \
 		t.Fatalf("actual Docker intake failed: %v", err)
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
-		if err := Run(context.Background(), engine, loaded, []string{"capsule-fixture"}, feed, time.Now().UTC(), nil, io.Discard, io.Discard); err != nil {
-			t.Fatalf("actual Docker runtime attempt %d failed: %v", attempt, err)
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), engine, loaded, []string{"capsule-fixture"}, feed, time.Now().UTC(), nil, &stdout, &stderr); err != nil {
+			t.Fatalf("actual Docker runtime attempt %d failed: %v\nstdout:\n%s\nstderr:\n%s", attempt, err, stdout.String(), stderr.String())
 		}
 	}
 }
