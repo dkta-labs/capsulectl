@@ -127,6 +127,15 @@ func (engine Engine) command(ctx context.Context, stdin io.Reader, stdout, stder
 	return nil
 }
 
+const (
+	runtimeDependencyRoot = "/capsule-deps/node_modules"
+	runtimeDependencyBin  = runtimeDependencyRoot + "/.bin"
+)
+
+func runtimeDockerfileContents(buildTag string) []byte {
+	return []byte("FROM " + buildTag + "\nUSER 0:0\nRUN mkdir -p " + runtimeDependencyRoot + " && if [ -d /workspace/node_modules ]; then cp -a /workspace/node_modules/. " + runtimeDependencyRoot + "/; fi && chown -R 0:0 " + runtimeDependencyRoot + " && chmod -R a-w " + runtimeDependencyRoot + "\n")
+}
+
 func RuntimePlan(loaded LoadedSpec, image string, command []string) (Plan, error) {
 	return runtimePlanForSource(loaded, image, command, loaded.SourceRoot)
 }
@@ -154,8 +163,8 @@ func runtimePlanForSource(loaded LoadedSpec, image string, command []string, sou
 		"--mount=type=volume,dst=/capsule-deps",
 		"--workdir=/",
 		"--env=HOME=/home/capsule",
-		"--env=NODE_PATH=/capsule-deps",
-		"--env=PATH=/capsule-deps/.bin:/usr/local/bin:/usr/bin:/bin",
+		"--env=NODE_PATH=" + runtimeDependencyRoot,
+		"--env=PATH=" + runtimeDependencyBin + ":/usr/local/bin:/usr/bin:/bin",
 	}
 	for _, path := range loaded.Spec.WritablePaths {
 		if path == "/workspace/node_modules" {
@@ -186,7 +195,7 @@ func runtimePlanForSource(loaded LoadedSpec, image string, command []string, sou
 	const bootstrap = `set -eu
 cp -R /source/. /workspace/
 rm -rf /workspace/.git /workspace/node_modules
-ln -s /capsule-deps /workspace/node_modules
+ln -s ` + runtimeDependencyRoot + ` /workspace/node_modules
 cd "$1"
 shift
 exec "$@"`
@@ -308,7 +317,7 @@ func Intake(ctx context.Context, engine Engine, loaded LoadedSpec, fetcher FeedF
 	if err := engine.command(ctx, nil, stdout, stderr, buildArgs...); err != nil {
 		return IntakeResult{}, fmt.Errorf("capsule build failed: %w", err)
 	}
-	runtimeDockerfile := []byte("FROM " + buildTag + "\nUSER 0:0\nRUN mkdir -p /capsule-deps && if [ -d /workspace/node_modules ]; then cp -a /workspace/node_modules/. /capsule-deps/; fi\n")
+	runtimeDockerfile := runtimeDockerfileContents(buildTag)
 	runtimeDockerfileName := filepath.Join(stage, "Runtime.Dockerfile")
 	if err := os.WriteFile(runtimeDockerfileName, runtimeDockerfile, 0o600); err != nil {
 		return IntakeResult{}, err
